@@ -24,6 +24,22 @@ const supabase = {
     return h;
   },
 
+  _translateError(msg) {
+    if (!msg) return "エラーが発生しました";
+    const m = msg.toLowerCase();
+    if (m.includes("user already registered")) return "このメールアドレスは既に登録されています";
+    if (m.includes("invalid login credentials")) return "メールアドレスまたはパスワードが正しくありません";
+    if (m.includes("email rate limit exceeded") || m.includes("rate limit")) return "しばらく時間を置いてから再度お試しください";
+    if (m.includes("password") && m.includes("at least")) return "パスワードは6文字以上で入力してください";
+    if (m.includes("invalid email")) return "メールアドレスの形式が正しくありません";
+    if (m.includes("signup is disabled")) return "現在新規登録を受け付けていません";
+    if (m.includes("email not confirmed")) return "メールアドレスが確認されていません";
+    if (m.includes("duplicate key") || m.includes("already exists")) return "このデータは既に登録されています";
+    if (m.includes("violates row level security")) return "権限エラーが発生しました";
+    if (m.includes("network") || m.includes("fetch")) return "通信エラーが発生しました。インターネット接続を確認してください";
+    return msg;
+  },
+
   async _fetch(path, opts = {}) {
     const res = await fetch(`${SUPABASE_URL}${path}`, {
       ...opts,
@@ -31,7 +47,8 @@ const supabase = {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: res.statusText }));
-      throw new Error(err.message || err.error_description || err.msg || "Error");
+      const rawMsg = err.message || err.error_description || err.msg || "Error";
+      throw new Error(this._translateError(rawMsg));
     }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
@@ -66,6 +83,21 @@ const supabase = {
     try { await this._fetch("/auth/v1/logout", { method: "POST" }); } catch {}
     this._token = null;
     this._user = null;
+  },
+
+  async resetPasswordForEmail(email, redirectTo) {
+    return await this._fetch("/auth/v1/recover", {
+      method: "POST",
+      body: JSON.stringify({ email, gotrue_meta_security: { captcha_token: "" } }),
+      headers: redirectTo ? { "redirect_to": redirectTo } : {},
+    });
+  },
+
+  async updateUser(updates) {
+    return await this._fetch("/auth/v1/user", {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    });
   },
 
   async getSession() {
@@ -853,7 +885,7 @@ function MediaPage({ userId, initialOpen }) {
 // ════════════════════════════════
 //  LOGIN
 // ════════════════════════════════
-function LoginPage({ onLogin, onGoRegister }) {
+function LoginPage({ onLogin, onGoRegister, onGoForgotPassword }) {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
@@ -870,10 +902,13 @@ function LoginPage({ onLogin, onGoRegister }) {
       if (profiles && profiles.length > 0) {
         onLogin(profiles[0]);
       } else {
-        setError("プロフィールが見つかりません");
+        // authにはユーザーがいるがprofileがない → ログアウトしてエラー
+        supabase.signOut();
+        localStorage.removeItem("sb_token");
+        setError("アカウント情報に問題があります。新規登録からやり直してください");
       }
     } catch (e) {
-      setError("ログインに失敗しました。メールアドレスとパスワードを確認してください。");
+      setError(e.message || "ログインに失敗しました。メールアドレスとパスワードを確認してください");
     }
     setLoading(false);
   };
@@ -893,6 +928,9 @@ function LoginPage({ onLogin, onGoRegister }) {
           onChange={e => { setPass(e.target.value); setError(""); }} />
         {error && <p style={{ fontSize: 12, color: "#C0392B", margin: "0 0 12px" }}>{error}</p>}
         <Btn onClick={submit} disabled={loading}>{loading ? "ログイン中..." : "ログイン"}</Btn>
+        <p style={{ textAlign: "right", margin: "10px 0 0", fontSize: 12 }}>
+          <button onClick={onGoForgotPassword} style={{ background: "none", border: "none", color: C.sub, cursor: "pointer", fontSize: 12, textDecoration: "underline", textUnderlineOffset: 3 }}>パスワードを忘れた方へ</button>
+        </p>
       </div>
 
       <p style={{ textAlign: "center", marginTop: 20, fontSize: 13, color: C.sub }}>
@@ -906,7 +944,7 @@ function LoginPage({ onLogin, onGoRegister }) {
 // ════════════════════════════════
 //  REGISTRATION
 // ════════════════════════════════
-function RegisterPage({ onRegister, onGoLogin }) {
+function RegisterPage({ onRegister, onGoLogin, onEmailConfirm }) {
   const [form, setForm] = useState({ code: "", email: "", password: "", name: "", instagram: "", tiktok: "" });
   const [errors, setErrors] = useState({});
   const [globalError, setGlobalError] = useState("");
@@ -927,8 +965,8 @@ function RegisterPage({ onRegister, onGoLogin }) {
     if (!validate()) return;
     setLoading(true); setGlobalError("");
     try {
-      // 1. 招待コードの確認
-      const codes = await db.select("invite_codes", { code: form.code.trim(), used: false });
+      // 1. 招待コードの確認（コード一致のみ、使い回し可能）
+      const codes = await db.select("invite_codes", { code: form.code.trim() });
       if (!codes || codes.length === 0) {
         setGlobalError("無効な招待コードです");
         setLoading(false);
@@ -936,8 +974,28 @@ function RegisterPage({ onRegister, onGoLogin }) {
       }
 
       // 2. Supabase Auth でユーザー作成
-      const authData = await supabase.signUp(form.email.trim(), form.password);
-      if (!authData?.user) throw new Error("登録に失敗しました");
+      let authData;
+      try {
+        authData = await supabase.signUp(form.email.trim(), form.password);
+      } catch (authErr) {
+        // signUp失敗 → そのまま日本語エラー表示
+        setGlobalError(authErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!authData?.user) {
+        setGlobalError("登録に失敗しました。もう一度お試しください");
+        setLoading(false);
+        return;
+      }
+
+      // If email confirmation is required, no access_token is returned
+      if (!authData.access_token) {
+        // Email confirmation required - show confirmation page
+        onEmailConfirm(form.email.trim());
+        setLoading(false);
+        return;
+      }
 
       supabase.saveToken();
 
@@ -949,14 +1007,23 @@ function RegisterPage({ onRegister, onGoLogin }) {
         instagram: form.instagram.trim(),
         tiktok: form.tiktok.trim(),
       };
-      await db.insert("profiles", profile);
+      try {
+        await db.insert("profiles", profile);
+      } catch (profileErr) {
+        // profile作成失敗 → ログアウトしてエラー表示
+        // （auth側のユーザーは残るが、次回同じメールで登録時にはsignInで再試行する）
+        supabase.signOut();
+        localStorage.removeItem("sb_token");
+        setGlobalError("プロフィールの作成に失敗しました。もう一度お試しください");
+        setLoading(false);
+        return;
+      }
 
-      // 4. 招待コードを使用済みに
-      await db.update("invite_codes", { id: codes[0].id }, { used: true, used_by: authData.user.id });
+      // 4. 招待コード検証完了（コードは使い回し可能）
 
       onRegister(profile);
     } catch (e) {
-      setGlobalError(e.message || "登録に失敗しました");
+      setGlobalError(e.message || "登録に失敗しました。もう一度お試しください");
     }
     setLoading(false);
   };
@@ -1018,6 +1085,143 @@ function RegisterPage({ onRegister, onGoLogin }) {
 }
 
 // ════════════════════════════════
+//  FORGOT PASSWORD
+// ════════════════════════════════
+function ForgotPasswordPage({ onGoLogin }) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (!email.trim()) { setError("メールアドレスを入力してください"); return; }
+    setLoading(true); setError("");
+    try {
+      await supabase.resetPasswordForEmail(email.trim());
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || "送信に失敗しました");
+    }
+    setLoading(false);
+  };
+
+  if (success) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+        <div style={{ textAlign: "center", marginBottom: 36 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>メール送信完了</h1>
+        </div>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 24, border: `1px solid ${C.bdr}`, textAlign: "center" }}>
+          <p style={{ fontSize: 14, color: C.tx, lineHeight: 1.7, margin: "0 0 8px" }}>パスワードリセット用のメールを送信しました。</p>
+          <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.7, margin: "0 0 20px" }}>メールに記載されたリンクをクリックして、新しいパスワードを設定してください。</p>
+          <Btn onClick={onGoLogin}>ログイン画面に戻る</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+      <div style={{ textAlign: "center", marginBottom: 36 }}>
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>パスワードリセット</h1>
+        <p style={{ margin: "6px 0 0", fontSize: 13, color: C.sub }}>登録済みのメールアドレスを入力してください</p>
+      </div>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+        <Inp label="メールアドレス" type="email" placeholder="you@example.com" value={email}
+          onChange={e => { setEmail(e.target.value); setError(""); }} />
+        {error && <p style={{ fontSize: 12, color: "#C0392B", margin: "0 0 12px" }}>{error}</p>}
+        <Btn onClick={submit} disabled={loading}>{loading ? "送信中..." : "リセットメールを送信"}</Btn>
+      </div>
+      <p style={{ textAlign: "center", marginTop: 20, fontSize: 13, color: C.sub }}>
+        <button onClick={onGoLogin} style={{ background: "none", border: "none", color: C.tx, fontWeight: 700, cursor: "pointer", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 3 }}>ログイン画面に戻る</button>
+      </p>
+    </div>
+  );
+}
+
+// ════════════════════════════════
+//  RESET PASSWORD (new password input)
+// ════════════════════════════════
+function ResetPasswordPage({ onComplete }) {
+  const [pass, setPass] = useState("");
+  const [passConfirm, setPassConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const submit = async () => {
+    if (!pass.trim() || pass.length < 6) { setError("パスワードは6文字以上で入力してください"); return; }
+    if (pass !== passConfirm) { setError("パスワードが一致しません"); return; }
+    setLoading(true); setError("");
+    try {
+      await supabase.updateUser({ password: pass });
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || "パスワードの更新に失敗しました");
+    }
+    setLoading(false);
+  };
+
+  if (success) {
+    return (
+      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+        <div style={{ textAlign: "center", marginBottom: 36 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>パスワード変更完了</h1>
+        </div>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 24, border: `1px solid ${C.bdr}`, textAlign: "center" }}>
+          <CheckCircle2 size={40} color="#27AE60" style={{ marginBottom: 12 }} />
+          <p style={{ fontSize: 14, color: C.tx, margin: "0 0 20px" }}>パスワードが正常に変更されました。</p>
+          <Btn onClick={onComplete}>ログイン画面へ</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+      <div style={{ textAlign: "center", marginBottom: 36 }}>
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>新しいパスワードを設定</h1>
+      </div>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 20, border: `1px solid ${C.bdr}` }}>
+        <Inp label="新しいパスワード" type="password" placeholder="6文字以上" value={pass}
+          onChange={e => { setPass(e.target.value); setError(""); }} />
+        <Inp label="パスワード（確認）" type="password" placeholder="もう一度入力" value={passConfirm}
+          onChange={e => { setPassConfirm(e.target.value); setError(""); }} />
+        {error && <p style={{ fontSize: 12, color: "#C0392B", margin: "0 0 12px" }}>{error}</p>}
+        <Btn onClick={submit} disabled={loading}>{loading ? "変更中..." : "パスワードを変更"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════
+//  EMAIL CONFIRMATION WAITING
+// ════════════════════════════════
+function EmailConfirmationPage({ email, onGoLogin }) {
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+      <div style={{ textAlign: "center", marginBottom: 36 }}>
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>メールを確認してください</h1>
+      </div>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 24, border: `1px solid ${C.bdr}`, textAlign: "center" }}>
+        <Bell size={40} color={C.tx} style={{ marginBottom: 12 }} />
+        <p style={{ fontSize: 14, color: C.tx, lineHeight: 1.7, margin: "0 0 8px" }}>確認メールを送信しました。</p>
+        <p style={{ fontSize: 13, color: C.sub, lineHeight: 1.7, margin: "0 0 4px" }}>
+          <strong style={{ color: C.tx }}>{email}</strong> に届いたメールのリンクをクリックして、メールアドレスを確認してください。
+        </p>
+        <p style={{ fontSize: 12, color: C.sub, lineHeight: 1.7, margin: "12px 0 20px" }}>メールが届かない場合は、迷惑メールフォルダもご確認ください。</p>
+        <Btn onClick={onGoLogin}>ログイン画面に戻る</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════
 //  MAIN
 // ════════════════════════════════
 export default function App() {
@@ -1026,10 +1230,49 @@ export default function App() {
   const [page, setPage] = useState("proposals");
   const [mediaInitial, setMediaInitial] = useState("");
   const [checkingSession, setCheckingSession] = useState(true);
+  const [confirmEmail, setConfirmEmail] = useState("");
 
-  // 起動時にセッション復元
+  // 起動時にセッション復元 + URLハッシュからリカバリートークン検出
   useEffect(() => {
     (async () => {
+      // Check URL hash for recovery (password reset link)
+      const hash = window.location.hash;
+      if (hash) {
+        const params = new URLSearchParams(hash.substring(1));
+        const accessToken = params.get("access_token");
+        const type = params.get("type");
+        if (accessToken && type === "recovery") {
+          supabase._token = accessToken;
+          supabase.saveToken();
+          window.location.hash = "";
+          setAuthScreen("resetPassword");
+          setCheckingSession(false);
+          return;
+        }
+        // Email confirmation redirect
+        if (accessToken && (type === "signup" || type === "email")) {
+          supabase._token = accessToken;
+          supabase.saveToken();
+          window.location.hash = "";
+          // Try to load profile and login
+          try {
+            const userData = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+              headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${accessToken}` },
+            });
+            if (userData.ok) {
+              const u = await userData.json();
+              supabase._user = u;
+              const profiles = await db.select("profiles", { id: u.id });
+              if (profiles && profiles.length > 0) {
+                setUser(profiles[0]);
+                setCheckingSession(false);
+                return;
+              }
+            }
+          } catch {}
+        }
+      }
+
       const session = await supabase.getSession();
       if (session) {
         try {
@@ -1046,6 +1289,7 @@ export default function App() {
 
   const handleLogin = (profile) => setUser(profile);
   const handleRegister = (profile) => setUser(profile);
+  const handleRegisterEmailConfirm = (email) => { setConfirmEmail(email); setAuthScreen("emailConfirm"); };
   const handleLogout = async () => {
     await supabase.signOut();
     supabase.clearToken();
@@ -1083,8 +1327,16 @@ export default function App() {
 
       {!user ? (
         authScreen === "login"
-          ? <LoginPage onLogin={handleLogin} onGoRegister={() => setAuthScreen("register")} />
-          : <RegisterPage onRegister={handleRegister} onGoLogin={() => setAuthScreen("login")} />
+          ? <LoginPage onLogin={handleLogin} onGoRegister={() => setAuthScreen("register")} onGoForgotPassword={() => setAuthScreen("forgotPassword")} />
+          : authScreen === "register"
+          ? <RegisterPage onRegister={handleRegister} onGoLogin={() => setAuthScreen("login")} onEmailConfirm={handleRegisterEmailConfirm} />
+          : authScreen === "forgotPassword"
+          ? <ForgotPasswordPage onGoLogin={() => setAuthScreen("login")} />
+          : authScreen === "resetPassword"
+          ? <ResetPasswordPage onComplete={() => { supabase.signOut(); supabase.clearToken(); setAuthScreen("login"); }} />
+          : authScreen === "emailConfirm"
+          ? <EmailConfirmationPage email={confirmEmail} onGoLogin={() => setAuthScreen("login")} />
+          : <LoginPage onLogin={handleLogin} onGoRegister={() => setAuthScreen("register")} onGoForgotPassword={() => setAuthScreen("forgotPassword")} />
       ) : (
         <>
           <div style={{
