@@ -29,7 +29,7 @@ const supabase = {
     const m = msg.toLowerCase();
     if (m.includes("user already registered")) return "このメールアドレスは既に登録されています";
     if (m.includes("invalid login credentials")) return "メールアドレスまたはパスワードが正しくありません";
-    if (m.includes("email rate limit exceeded") || m.includes("rate limit")) return "しばらく時間を置いてから再度お試しください";
+    if (m.includes("email rate limit exceeded") || m.includes("rate limit") || m.includes("security purposes")) return "しばらく時間を置いてから再度お試しください";
     if (m.includes("password") && m.includes("at least")) return "パスワードは6文字以上で入力してください";
     if (m.includes("invalid email")) return "メールアドレスの形式が正しくありません";
     if (m.includes("signup is disabled")) return "現在新規登録を受け付けていません";
@@ -242,9 +242,9 @@ function Nav({ page, set }) {
   ];
   return (
     <nav style={{
-      position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100,
       background: "#fff", borderTop: `1px solid ${C.bdr}`,
       display: "flex", padding: "6px 0 env(safe-area-inset-bottom, 8px)",
+      flexShrink: 0, zIndex: 10,
     }}>
       {tabs.map(({ id, label, icon: Icon }) => (
         <button key={id} onClick={() => set(id)} style={{
@@ -387,7 +387,7 @@ function Proposals({ userId }) {
     <div>
       <Top title="参考商品の提案" sub={`${list.length}件`}
         right={!open && <Btn small icon={Plus} onClick={() => setOpen(true)}>提案</Btn>} />
-      <div style={{ padding: "14px 16px 100px" }}>
+      <div style={{ padding: "14px 16px 20px" }}>
         {open && (
           <div style={{ background: "#fff", borderRadius: 14, border: `1px solid ${C.bdr}`, padding: 16, marginBottom: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -522,7 +522,7 @@ function Products({ userId, onGoMedia }) {
     <div>
       <Top title="商品選択" sub={`${list.length}件`}
         right={!open && <Btn small icon={Plus} onClick={() => setOpen(true)}>商品登録</Btn>} />
-      <div style={{ padding: "14px 16px 100px" }}>
+      <div style={{ padding: "14px 16px 20px" }}>
         {needsMedia.length > 0 && !open && (
           <div style={{
             background: "#FFF8ED", borderRadius: 12, padding: 14, marginBottom: 14,
@@ -723,7 +723,7 @@ function MediaPage({ userId, initialOpen }) {
     <div>
       <Top title="素材" sub={`${totalFiles}ファイル`}
         right={!showPicker && <Btn small icon={Plus} onClick={() => setShowPicker(true)}>追加</Btn>} />
-      <div style={{ padding: "14px 16px 100px" }}>
+      <div style={{ padding: "14px 16px 20px" }}>
         {showPicker && (
           <div style={{ background: "#fff", borderRadius: 14, border: `1px solid ${C.bdr}`, padding: 16, marginBottom: 16 }}>
             <span style={{ fontSize: 14, fontWeight: 700, display: "block", marginBottom: 12 }}>素材を追加する商品を選択</span>
@@ -914,7 +914,7 @@ function LoginPage({ onLogin, onGoRegister, onGoForgotPassword }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+    <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
       <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12, letterSpacing: "0.02em" }}>OR</div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>OURES クリエイター</h1>
@@ -949,6 +949,13 @@ function RegisterPage({ onRegister, onGoLogin, onEmailConfirm }) {
   const [errors, setErrors] = useState({});
   const [globalError, setGlobalError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
   const validate = () => {
     const e = {};
@@ -979,7 +986,12 @@ function RegisterPage({ onRegister, onGoLogin, onEmailConfirm }) {
         authData = await supabase.signUp(form.email.trim(), form.password);
       } catch (authErr) {
         // signUp失敗 → そのまま日本語エラー表示
-        setGlobalError(authErr.message);
+        if (authErr.message && (authErr.message.includes("40 seconds") || authErr.message.includes("rate limit") || authErr.message.includes("security purposes"))) {
+          setGlobalError("しばらく時間を置いてから再度お試しください");
+          setCooldown(45);
+        } else {
+          setGlobalError(authErr.message);
+        }
         setLoading(false);
         return;
       }
@@ -1029,7 +1041,7 @@ function RegisterPage({ onRegister, onGoLogin, onEmailConfirm }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, padding: "40px 24px" }}>
+    <div style={{ minHeight: "100%", background: C.bg, padding: "40px 24px" }}>
       <div style={{ textAlign: "center", marginBottom: 28 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>OURES クリエイター</h1>
         <p style={{ margin: "6px 0 0", fontSize: 13, color: C.sub }}>招待コードを入力して登録してください</p>
@@ -1072,7 +1084,7 @@ function RegisterPage({ onRegister, onGoLogin, onEmailConfirm }) {
         {globalError && <p style={{ fontSize: 12, color: "#C0392B", margin: "8px 0" }}>{globalError}</p>}
 
         <div style={{ marginTop: 4 }}>
-          <Btn onClick={submit} disabled={loading}>{loading ? "登録中..." : "登録する"}</Btn>
+          <Btn onClick={submit} disabled={loading || cooldown > 0}>{loading ? "登録中..." : cooldown > 0 ? `${cooldown}秒後に再試行可能` : "登録する"}</Btn>
         </div>
       </div>
 
@@ -1092,22 +1104,36 @@ function ForgotPasswordPage({ onGoLogin }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
   const submit = async () => {
     if (!email.trim()) { setError("メールアドレスを入力してください"); return; }
+    if (cooldown > 0) return;
     setLoading(true); setError("");
     try {
       await supabase.resetPasswordForEmail(email.trim());
       setSuccess(true);
+      setCooldown(45);
     } catch (e) {
-      setError(e.message || "送信に失敗しました");
+      if (e.message && (e.message.includes("40 seconds") || e.message.includes("rate limit") || e.message.includes("security purposes"))) {
+        setError("しばらく時間を置いてから再度お試しください");
+        setCooldown(45);
+      } else {
+        setError(e.message || "送信に失敗しました");
+      }
     }
     setLoading(false);
   };
 
   if (success) {
     return (
-      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+      <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>メール送信完了</h1>
@@ -1122,7 +1148,7 @@ function ForgotPasswordPage({ onGoLogin }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+    <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
       <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>パスワードリセット</h1>
@@ -1132,7 +1158,7 @@ function ForgotPasswordPage({ onGoLogin }) {
         <Inp label="メールアドレス" type="email" placeholder="you@example.com" value={email}
           onChange={e => { setEmail(e.target.value); setError(""); }} />
         {error && <p style={{ fontSize: 12, color: "#C0392B", margin: "0 0 12px" }}>{error}</p>}
-        <Btn onClick={submit} disabled={loading}>{loading ? "送信中..." : "リセットメールを送信"}</Btn>
+        <Btn onClick={submit} disabled={loading || cooldown > 0}>{loading ? "送信中..." : cooldown > 0 ? `${cooldown}秒後に再送信可能` : "リセットメールを送信"}</Btn>
       </div>
       <p style={{ textAlign: "center", marginTop: 20, fontSize: 13, color: C.sub }}>
         <button onClick={onGoLogin} style={{ background: "none", border: "none", color: C.tx, fontWeight: 700, cursor: "pointer", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 3 }}>ログイン画面に戻る</button>
@@ -1166,7 +1192,7 @@ function ResetPasswordPage({ onComplete }) {
 
   if (success) {
     return (
-      <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+      <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>パスワード変更完了</h1>
@@ -1181,7 +1207,7 @@ function ResetPasswordPage({ onComplete }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+    <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
       <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>新しいパスワードを設定</h1>
@@ -1203,7 +1229,7 @@ function ResetPasswordPage({ onComplete }) {
 // ════════════════════════════════
 function EmailConfirmationPage({ email, onGoLogin }) {
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
+    <div style={{ minHeight: "100%", background: C.bg, display: "flex", flexDirection: "column", justifyContent: "center", padding: "40px 24px" }}>
       <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: C.tx, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 800, marginBottom: 12 }}>OR</div>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: C.tx }}>メールを確認してください</h1>
@@ -1312,21 +1338,26 @@ export default function App() {
 
   return (
     <div style={{
-      minHeight: "100vh", background: C.bg,
+      height: "100vh", background: C.bg,
       fontFamily: "'Noto Sans JP', 'Hiragino Sans', -apple-system, sans-serif",
       maxWidth: 480, margin: "0 auto",
+      display: "flex", flexDirection: "column",
+      overflow: "hidden", position: "relative",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700&display=swap');
         @keyframes spin { to { transform: rotate(360deg); } }
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { margin: 0; background: #F0EFED; }
+        html, body { margin: 0; padding: 0; background: #F0EFED; height: 100%; overflow: hidden; }
+        html { touch-action: manipulation; }
         ::-webkit-scrollbar { width: 0; }
         input::placeholder { color: #ccc; }
+        input, button, select, textarea { font-family: inherit; }
       `}</style>
 
       {!user ? (
-        authScreen === "login"
+        <div style={{ flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
+        {authScreen === "login"
           ? <LoginPage onLogin={handleLogin} onGoRegister={() => setAuthScreen("register")} onGoForgotPassword={() => setAuthScreen("forgotPassword")} />
           : authScreen === "register"
           ? <RegisterPage onRegister={handleRegister} onGoLogin={() => setAuthScreen("login")} onEmailConfirm={handleRegisterEmailConfirm} />
@@ -1337,11 +1368,14 @@ export default function App() {
           : authScreen === "emailConfirm"
           ? <EmailConfirmationPage email={confirmEmail} onGoLogin={() => setAuthScreen("login")} />
           : <LoginPage onLogin={handleLogin} onGoRegister={() => setAuthScreen("register")} onGoForgotPassword={() => setAuthScreen("forgotPassword")} />
+        }
+        </div>
       ) : (
         <>
           <div style={{
             padding: "10px 20px", background: "#fff", borderBottom: `1px solid ${C.bdr}`,
             display: "flex", alignItems: "center", gap: 10,
+            flexShrink: 0, zIndex: 10,
           }}>
             <div style={{
               width: 28, height: 28, borderRadius: "50%", background: C.tx,
@@ -1356,9 +1390,11 @@ export default function App() {
               fontSize: 11, color: C.sub, cursor: "pointer",
             }}>ログアウト</button>
           </div>
-          {page === "proposals" && <Proposals userId={user.id} />}
-          {page === "products" && <Products userId={user.id} onGoMedia={goMedia} />}
-          {page === "media" && <MediaPage userId={user.id} initialOpen={mediaInitial} />}
+          <div style={{ flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
+            {page === "proposals" && <Proposals userId={user.id} />}
+            {page === "products" && <Products userId={user.id} onGoMedia={goMedia} />}
+            {page === "media" && <MediaPage userId={user.id} initialOpen={mediaInitial} />}
+          </div>
           <Nav page={page} set={setPageWrap} />
         </>
       )}
